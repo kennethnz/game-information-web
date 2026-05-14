@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.env
+venv/
+
+# AWS
+*.pem
+.aws/
+secrets.yaml
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db

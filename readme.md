@@ -20,4 +20,10 @@ npm run dev
 ```
 
 ## Status
-🚧 In Progress
+## Progress
+- [x] Network Layer (VPC, Subnets, IGW, Route Tables)
+- [ ] Security Groups
+- [ ] RDS MySQL
+- [ ] EC2 + Auto Scaling
+- [ ] Application Load Balancer
+- [ ] Deploy to AWS
