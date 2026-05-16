@@ -113,3 +113,55 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
+
+
+# ─── SECURITY GROUPS ───────────────────────────────
+
+  # ALB Security Group - allows internet traffic
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB Security Group
+      VpcId: !Ref GamingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: gaming-alb-sg
+
+  # App Security Group - allows traffic from ALB only
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: App Security Group
+      VpcId: !Ref GamingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: gaming-app-sg
+
+  # DB Security Group - allows traffic from App only
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DB Security Group
+      VpcId: !Ref GamingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+      Tags:
+        - Key: Name
+          Value: gaming-db-sg
