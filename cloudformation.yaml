@@ -165,3 +165,224 @@ Resources:
       Tags:
         - Key: Name
           Value: gaming-db-sg
+
+# ─── DATA LAYER ────────────────────────────────────
+
+  # DB Subnet Group - tells RDS which subnets to use
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Gaming Store DB Subnet Group
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: gaming-db-subnet-group
+
+  # RDS MySQL Instance
+  GamingDB:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: gaming-store-db
+      DBInstanceClass: db.t3.micro
+      Engine: mysql
+      EngineVersion: '8.0'
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: gaming_store
+      AllocatedStorage: '20'
+      StorageType: gp2
+      MultiAZ: false
+      PubliclyAccessible: false
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 0
+      Tags:
+        - Key: Name
+          Value: gaming-store-db          
+
+# ─── APPLICATION LAYER ─────────────────────────────
+
+  # IAM Role for EC2
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: gaming-store-ec2-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  # Instance Profile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # Launch Template
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: gaming-store-lt
+      LaunchTemplateData:
+        ImageId: ami-0f58b397bc5c1f2e8
+        InstanceType: t2.micro
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref AppSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install python3 python3-pip git -y
+            pip3 install flask flask-cors mysql-connector-python python-dotenv gunicorn
+            mkdir -p /app
+            cd /app
+            cat > app.py << 'EOF'
+            import os
+            from flask import Flask, jsonify
+            from flask_cors import CORS
+            import mysql.connector
+
+            app = Flask(__name__)
+            CORS(app)
+
+            def get_db_connection():
+                conn = mysql.connector.connect(
+                    host=os.environ.get('DB_HOST'),
+                    user=os.environ.get('DB_USER'),
+                    password=os.environ.get('DB_PASSWORD'),
+                    database=os.environ.get('DB_NAME')
+                )
+                return conn
+
+            @app.route('/api/games')
+            def get_games():
+                conn = get_db_connection()
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute('SELECT * FROM games')
+                games = cursor.fetchall()
+                cursor.close()
+                conn.close()
+                return jsonify(games)
+
+            @app.route('/health')
+            def health():
+                return jsonify({'status': 'healthy'})
+
+            if __name__ == '__main__':
+                app.run(host='0.0.0.0', port=80)
+            EOF
+            export DB_HOST=${GamingDB.Endpoint.Address}
+            export DB_USER=${DBUsername}
+            export DB_PASSWORD=${DBPassword}
+            export DB_NAME=gaming_store
+            gunicorn --bind 0.0.0.0:80 app:app
+
+  # Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: gaming-store-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: '2'
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: gaming-store-ec2
+          PropagateAtLaunch: true          
+
+
+
+# ─── PRESENTATION LAYER ────────────────────────────
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: gaming-store-alb
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: gaming-store-alb
+
+  # Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: gaming-store-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref GamingVPC
+      TargetType: instance
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: gaming-store-tg
+
+  # Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # Attach ASG to Target Group
+  ASGTargetGroupAttachment:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      TargetGroupARNs:
+        - !Ref TargetGroup
+
+# ─── OUTPUTS ───────────────────────────────────────
+Outputs:
+  ALBDnsName:
+    Description: ALB DNS Name - open this in browser
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: gaming-store-alb-dns
+
+  RDSEndpoint:
+    Description: RDS Endpoint
+    Value: !GetAtt GamingDB.Endpoint.Address
+    Export:
+      Name: gaming-store-rds-endpoint
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref GamingVPC
+    Export:
+      Name: gaming-store-vpc-id          
